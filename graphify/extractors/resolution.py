@@ -1527,12 +1527,19 @@ def _apply_symbol_resolution_facts(
         ensure_symbol_node(declaration.file_path, declaration.name, declaration.line)
 
     local_aliases_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    scoped_aliases_by_file: dict[tuple[Path, str], list[tuple[int, str, tuple[Path, str]]]] = {}
     for import_fact in facts.imports:
         file_path = _resolve_cached(import_fact.file_path)
-        local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = (
+        resolved_target = (
             _resolve_cached(import_fact.target_path),
             import_fact.imported_name,
         )
+        if import_fact.scope_id is None:
+            local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = resolved_target
+        else:
+            scoped_aliases_by_file.setdefault(
+                (file_path, import_fact.scope_id), []
+            ).append((import_fact.line, import_fact.local_name, resolved_target))
 
     pending_aliases_by_file: dict[Path, list[_SymbolAliasFact]] = {}
     for alias_fact in facts.aliases:
@@ -2032,7 +2039,15 @@ def _apply_symbol_resolution_facts(
     for use_fact in facts.uses:
         file_path = _resolve_cached(use_fact.file_path)
         target_id = None
-        unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
+        unresolved_origin = None
+        scoped_imports = scoped_aliases_by_file.get((file_path, use_fact.source_id))
+        if scoped_imports:
+            matching = [item for item in scoped_imports if item[1] == use_fact.local_name]
+            if matching:
+                before = [item for item in matching if item[0] <= use_fact.line]
+                unresolved_origin = (before[-1] if before else matching[0])[2]
+        if unresolved_origin is None:
+            unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
         if unresolved_origin is not None:
             origin_path, origin_symbol = resolve_exported_origin(*unresolved_origin)
             target_id = symbol_nodes.get((origin_path, origin_symbol))
@@ -3414,6 +3429,31 @@ def _python_call_identifier(node, source: bytes) -> str | None:
         return _read_text(function_node, source)
     return None
 
+def _python_enclosing_scope_id(node, path: Path, source: bytes) -> str | None:
+    """Return the plain node ID of the enclosing top-level function or class method,
+    or None if the node is at module scope (#5421).
+    """
+    curr = node.parent
+    found_func = None
+    stem = _file_stem(path)
+    while curr is not None and curr.type != "module":
+        if curr.type == "function_definition":
+            p = curr.parent
+            while p is not None and p.type not in ("module", "class_definition", "function_definition"):
+                p = p.parent
+            if p is not None and p.type == "class_definition":
+                cname_node = p.child_by_field_name("name")
+                mname_node = curr.child_by_field_name("name")
+                if cname_node and mname_node:
+                    return _make_id(stem, _read_text(cname_node, source), _read_text(mname_node, source))
+            fname_node = curr.child_by_field_name("name")
+            if fname_node:
+                found_func = _read_text(fname_node, source)
+        curr = curr.parent
+    if found_func:
+        return _make_id(stem, found_func)
+    return None
+
 def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
@@ -3485,6 +3525,7 @@ def _collect_python_symbol_resolution_facts(
                 pkg_dir = _resolve_python_namespace_dir(module_name, path, root, level)
                 if pkg_dir is None:
                     continue
+            scope_id = _python_enclosing_scope_id(node, path, source)
             for imported_name, local_name in _python_imported_names(node, source):
                 line = node.start_point[0] + 1
                 if pkg_dir is not None:
@@ -3508,9 +3549,11 @@ def _collect_python_symbol_resolution_facts(
                 if target_path is None:
                     continue  # a namespace package owns no symbols of its own to bind
                 facts.imports.append(
-                    _SymbolImportFact(path, local_name, target_path, imported_name, line)
+                    _SymbolImportFact(
+                        path, local_name, target_path, imported_name, line, scope_id=scope_id,
+                    )
                 )
-                if path.stem == "__init__":
+                if path.stem == "__init__" and scope_id is None:
                     facts.exports.append(
                         _SymbolExportFact(
                             path,
