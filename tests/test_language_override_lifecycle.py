@@ -2,6 +2,7 @@
 import hashlib
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,9 @@ import pytest
 from graphify import watch as watch_mod
 from graphify.detect import detect_incremental, save_manifest
 from graphify.rcfile import set_language_overrides
+
+# Concurrency/timing tests (threads racing watch loop); flaky under xdist CPU load.
+pytestmark = pytest.mark.serial
 
 
 @pytest.fixture(autouse=True)
@@ -158,10 +162,16 @@ def drive_watch(root, monkeypatch, actions, *, observed_roots=None):
         assert not worker.is_alive(), "STUCK: watcher event handler did not return"
         assert not errors, errors
 
+    class WatchClock:
+        sleep = staticmethod(pump)
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
     monkeypatch.setattr(observers, "Observer", Observer)
     monkeypatch.setattr(polling, "PollingObserver", Observer)
     monkeypatch.setattr(watch_mod, "_rebuild_code", rebuild)
-    monkeypatch.setattr(watch_mod.time, "sleep", pump)
+    monkeypatch.setattr(watch_mod, "time", WatchClock())
     watch_mod.watch(root, debounce=0)
 
 
