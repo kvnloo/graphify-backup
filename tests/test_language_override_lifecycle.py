@@ -10,6 +10,9 @@ from graphify import watch as watch_mod
 from graphify.detect import detect_incremental, save_manifest
 from graphify.rcfile import set_language_overrides
 
+# Concurrency/timing tests (threads racing watch loop); flaky under xdist CPU load.
+pytestmark = pytest.mark.serial
+
 
 @pytest.fixture(autouse=True)
 def reset_overrides():

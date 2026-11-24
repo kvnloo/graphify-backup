@@ -3,6 +3,9 @@ import pytest
 
 from tests.test_language_override_lifecycle import drive_watch, graph_labels
 
+# Concurrency/timing tests (threads racing watch loop); flaky under xdist CPU load.
+pytestmark = pytest.mark.serial
+
 
 @pytest.mark.parametrize("replacement", [False, True])
 def test_ignored_root_configuration_still_rebuilds_the_graph(tmp_path, monkeypatch, replacement):
