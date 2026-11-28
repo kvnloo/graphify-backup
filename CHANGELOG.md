@@ -2,6 +2,11 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.123 (unreleased)
+
+- Change: **dsh** `graphify dsh install` now checks each profile's installed bridge copy and its version instead of trusting the `package.json` declaration, names the profiles it found, and exits 2 when none of them can mount the bridge. Previously an install with no usable bridge printed the add command but still reported success, so scripts and users saw a green result over an inert guard.
+- Add: **dsh** `graphify dsh doctor` diagnoses the wiring and repairs nothing by default; `graphify dsh doctor --fix` adds the pinned bridge to every dsh profile through `dsh plugin add`, rewrites missing skill/hook/overlay wiring while keeping user hook entries and the existing `--strict` choice, reports a double mount instead of silently choosing a scope, and re-checks. The default is read-only for CI and post-upgrade audits.
+
 ## 0.9.122 (2026-11-28)
 
 A new Shopify/Liquid theme extractor, TypeScript and C++ extractor accuracy, incremental-extraction correctness (two silent-corruption/data-loss fixes), and a batch of robustness and performance work across sixteen community pull requests. The TypeScript, C++, Markdown and Shopify-theme changes alter extraction output, so the AST cache schema bumps (57 to 58) and those inputs re-extract on the first build after upgrading; everything else needs no rebuild.
@@ -150,9 +155,6 @@ Performance work on the extract/build/update pipeline, plus a batch of extractor
 - Fix: **build** a member's structural `method`/`contains` edge to its owner is kept over an opposite-direction member-usage edge (a method reading its class's own static property or constant), so the member no longer vanishes from the type's walk; non-usage relations (inherits/implements) keep the existing rule (#2391, thanks @livingforelvis).
 
 The AST cache schema is bumped to 50; warm caches re-run the affected Kotlin, Java, SQL, VB.NET, C++ and Python (sys.path import) extractions.
-
-- Change: **dsh** `graphify dsh install` now checks each profile's installed bridge copy and its version instead of trusting the `package.json` declaration, names the profiles it found, and exits 2 when none of them can mount the bridge. Previously an install with no usable bridge printed the add command but still reported success, so scripts and users saw a green result over an inert guard.
-- Add: **dsh** `graphify dsh doctor` diagnoses the wiring and repairs nothing by default; `graphify dsh doctor --fix` adds the pinned bridge to every dsh profile through `dsh plugin add`, rewrites missing skill/hook/overlay wiring while keeping user hook entries and the existing `--strict` choice, reports a double mount instead of silently choosing a scope, and re-checks. The default is read-only for CI and post-upgrade audits.
 
 ## 0.9.113 (2026-11-19)
 
