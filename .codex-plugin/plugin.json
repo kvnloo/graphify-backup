@@ -1,6 +1,6 @@
 {
   "name": "graphify",
-  "version": "0.9.120",
+  "version": "0.9.123",
   "description": "Turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph with AST parsing, Leiden community detection, and local MCP tools.",
   "author": {
     "name": "Graphify Labs",
@@ -16,7 +16,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "graphifyy[sql,mcp]==0.9.120",
+        "graphifyy[sql,mcp]==0.9.123",
         "graphify-mcp"
       ]
     }

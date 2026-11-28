@@ -2,6 +2,37 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.123 (2026-11-28)
+
+TypeScript, C++ and Bash extractor accuracy, incremental-extraction correctness, several new surfaces (an import-cycles tool, native plugin manifests, sharded semantic cache), and robustness/perf work across thirty community pull requests. The TypeScript, C++ and Bash changes alter extraction output, so the AST cache schema bumps (58 to 59) and those inputs re-extract on the first build after upgrading; everything else needs no rebuild.
+
+### Features
+- **cli,mcp** import cycles are exposed via `graphify cycles` and an `import_cycles` MCP tool, reported shortest-first (#5513 thanks @Gaurav-meena95, ordering #5487 thanks @azizur100389).
+- **plugins** native Claude Code and Codex plugin manifests are shipped (additive; a `sync_plugin_manifests.py` keeps the version pin in step) (#5509, thanks @Gaurav-meena95).
+- **cache** semantic cache entries are sharded by hash prefix for faster lookup on large graphs; keys and values are unchanged (storage layout only, no rebuild) (#5503, thanks @azizur100389).
+- **claude-cli** `GRAPHIFY_CLAUDE_CLI_ARGS` passes extra arguments through to Claude (#5502, thanks @azizur100389).
+- **query** source paths can be excluded before traversal so excluded nodes neither seed nor bridge (#5598, thanks @azizur100389).
+
+### Extractor fixes
+- **typescript** a call binds through a declared-typed property receiver (`deps.port!.inspect()`) (#5586); a generic tagged-template call is recovered (#5591); a local callable value and a returned factory method are represented and resolved instead of mis-bound (#5594); and incremental extraction preserves calls resolved through JS/TS barrels (#5596). Thanks @rvitaliy.
+- **cpp** the export-macro blanking no longer fires inside a comment or a string/char/raw-string literal, so a `// … class` comment before a definition no longer drops its return type and `references` edge (#5581, thanks @leninworld).
+- **bash** resolution gains: a `$(fn)` substitution used as an argument or test is a call (#5561); a call after a keyword read as a command name is recovered (#5572); a nested function's `defines` edge comes from its own file (#5573); the `$(dirname "$0")/x.sh` script-dir idiom resolves by path, through a shell runner, and written inline in a `source` (#5560, #5562, #5575); and a script invoked through a tracked directory variable or an extensionless shebang-backed shell script resolves, fail-closed on unknown bases and `..` (#5564). Thanks @yashsaxena, @azizur100389; cross-library sibling-sourced-script calls resolve too (thanks @m3lonxd).
+- **sections** exact non-section IDs are preserved and heading ambiguity is surfaced (#5485, thanks @azizur100389).
+
+### Incremental extraction
+- **extract** an unresolved dynamic `import()` target is kept out of the incremental prune, matching a full rebuild instead of dropping the node and its `dynamic_import` edge (#5544, thanks @poberherr).
+
+### Correctness & robustness
+- **analyze** import cycles return shortest-first and empty for `top_n <= 0`; `report.generate` tolerates null/non-numeric `confidence_score` (#5487/#5544... , #5587, thanks @azizur100389, @Gaurav-meena95).
+- **obsidian** node summaries include incoming edges (#5488, thanks @azizur100389).
+- **export** `to_cypher` coerces non-string IDs/labels, the Cypher exporter preserves parallel call sites, and export filename budgets stay in bytes below the floor (#5588, #5515, thanks @Gaurav-meena95, @Synvoya).
+- **serve** null MCP tool arguments are handled safely (#5571, thanks @Gaurav-meena95).
+- **prs** `gh` runs with the graph repo as cwd when `--repo` is omitted (#5535, thanks @ompatil1906).
+- **test** the arrow-function fixture is isolated to fix an xdist race (#5489, thanks @azizur100389).
+
+### Performance (output byte-identical)
+- **serve** `_strip_diacritics` fast-paths ASCII (#5567); **export** `_cypher_escape` fast-paths clean ASCII (#5559). Thanks @Gaurav-meena95.
+
 ## 0.9.122 (2026-11-28)
 
 A new Shopify/Liquid theme extractor, TypeScript and C++ extractor accuracy, incremental-extraction correctness (two silent-corruption/data-loss fixes), and a batch of robustness and performance work across sixteen community pull requests. The TypeScript, C++, Markdown and Shopify-theme changes alter extraction output, so the AST cache schema bumps (57 to 58) and those inputs re-extract on the first build after upgrading; everything else needs no rebuild.

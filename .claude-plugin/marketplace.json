@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Knowledge graph and codebase architecture intelligence for AI coding assistants",
-    "version": "0.9.120"
+    "version": "0.9.123"
   },
   "plugins": [
     {
       "name": "graphify",
       "source": "./",
       "description": "Turn any folder of code, docs, papers, images, or videos into a queryable knowledge graph with AST parsing, Leiden community detection, and local MCP tools.",
-      "version": "0.9.120"
+      "version": "0.9.123"
     }
   ]
 }
