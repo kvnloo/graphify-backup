@@ -239,6 +239,76 @@ def _merge_changed_paths(*sources: "list[Path] | None") -> list[Path]:
     return out
 
 
+def _id_collision_partners(
+    targets: list[Path],
+    deleted: "set[str]",
+    code_files: list[Path],
+    stored_nodes: list[dict],
+    identity: "Callable[[str], str | None]",
+    root: Path,
+    exclude: "set[Path]",
+) -> list[Path]:
+    """Corpus files that must be re-extracted together with ``targets``.
+
+    extract() salts a node id two files both produce (``sample.go`` and
+    ``sample.java`` both yield ``sample_dataprocessor``; two XAML files both
+    yield ``binding_username``) into ``make_id(<path>, <id>)``, but only when
+    the colliding files are extracted in the same batch. An incremental run
+    that re-extracted one of them alone gave it the bare id a full build never
+    uses, and deleting one left the others on salted ids, so the graph drifted
+    from a full build of the same tree.
+
+    Partners are found two ways: files with the same file-node id as a target
+    (catches a newly added sibling), and files holding a salted node whose bare
+    id a target's or deleted file's salted node also carries. The second is
+    repeated until no new file joins, because a partner can collide with yet
+    another file on a different id.
+    """
+    from graphify.extract import _file_node_id
+    from graphify.ids import make_id
+
+    def _rel(path: str | Path) -> "Path | None":
+        try:
+            return Path(os.path.abspath(path)).relative_to(root)
+        except ValueError:
+            return None
+
+    corpus: dict[str, Path] = {}
+    for path in code_files:
+        absolute = Path(os.path.abspath(path))
+        if absolute not in exclude and absolute.is_file():
+            corpus[absolute.as_posix()] = absolute
+
+    # Salted nodes per stored source: (source identity, bare id).
+    salted: list[tuple[str, str]] = []
+    for node in stored_nodes:
+        nid = node.get("id")
+        source = identity(node.get("source_file") or "")
+        rel = _rel(source) if source else None
+        if not isinstance(nid, str) or rel is None:
+            continue
+        prefix = make_id(rel.as_posix()) + "_"
+        if nid.startswith(prefix) and len(nid) > len(prefix):
+            salted.append((source, nid[len(prefix):]))
+
+    group = {Path(os.path.abspath(p)).as_posix() for p in targets} | set(deleted)
+    stems = {_file_node_id(r) for r in map(_rel, group) if r is not None}
+    for key, absolute in corpus.items():
+        rel = _rel(absolute)
+        if rel is not None and _file_node_id(rel) in stems:
+            group.add(key)
+
+    while True:
+        bare = {raw for source, raw in salted if source in group}
+        joined = {source for source, raw in salted if raw in bare and source not in group}
+        if not joined:
+            break
+        group |= joined
+
+    have = {Path(os.path.abspath(p)).as_posix() for p in targets}
+    return [corpus[key] for key in sorted(group - have) if key in corpus]
+
+
 # msvcrt.locking reports a byte range held by another handle as EACCES
 # (EDEADLOCK is the LK_LOCK flavour). Any other errno means the lock call
 # itself is unsupported on this filesystem, so waiting for it is pointless.
@@ -628,6 +698,8 @@ class _StoredSourcePaths:
         self.existing_source_root = project_root
         self._identity_cache: dict[str, str | None] = {}
         self._in_watch_root_cache: dict[str, bool] = {}
+        self._absolute_identity_cache: dict[tuple[str, Path], str | None] = {}
+        self._rebased_cache: dict[str, str | None] = {}
         relative_marker_prefix: str | None = None
 
         root_marker = out / ".graphify_root"
@@ -718,6 +790,19 @@ class _StoredSourcePaths:
         return posixpath.normpath(normalized) if normalized else normalized
 
     def absolute_identity(self, source_file: str | None, root: Path) -> str | None:
+        # An incremental update asks this for every stored node and edge while
+        # building the resolve context, so cache it per file and root like
+        # identity() below.
+        if not isinstance(source_file, str):
+            return self._absolute_identity_uncached(source_file, root)
+        key = (source_file, root)
+        try:
+            return self._absolute_identity_cache[key]
+        except KeyError:
+            identity = self._absolute_identity_cache[key] = self._absolute_identity_uncached(source_file, root)
+            return identity
+
+    def _absolute_identity_uncached(self, source_file: str | None, root: Path) -> str | None:
         normalized = self._normalize_source(source_file)
         if not normalized:
             return normalized
@@ -759,19 +844,31 @@ class _StoredSourcePaths:
         return self.identity(item.get("source_file")) in identities
 
     def rebase_preserved(self, item: dict) -> None:
-        identity = self.identity(item.get("source_file"))
+        # Called once for every preserved node, edge and hyperedge. The new
+        # source_file depends only on the old one, so work it out once per file.
+        source_file = item.get("source_file")
+        if not isinstance(source_file, str):
+            rebased = self._rebased_uncached(source_file)
+        else:
+            try:
+                rebased = self._rebased_cache[source_file]
+            except KeyError:
+                rebased = self._rebased_cache[source_file] = self._rebased_uncached(source_file)
+        if rebased is not None:
+            item["source_file"] = rebased
+
+    def _rebased_uncached(self, source_file: str | None) -> str | None:
+        """The source_file a preserved item is stored with, or None to leave it as is."""
+        identity = self.identity(source_file)
         if not identity:
-            return
+            return None
         identity_path = Path(identity)
         if not _is_relative_to(identity_path, self.watch_root):
-            normalized = self.normalize(item.get("source_file"))
-            if normalized:
-                item["source_file"] = normalized
-            return
+            return self.normalize(source_file) or None
         try:
-            item["source_file"] = identity_path.relative_to(self.project_root).as_posix()
+            return identity_path.relative_to(self.project_root).as_posix()
         except ValueError:
-            item["source_file"] = identity
+            return identity
 
 
 # A source_file that is a URL/virtual scheme (gdoc://, s3://, http://, ...) rather
@@ -1542,10 +1639,29 @@ def _reconcile_existing_graph(
             members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
             if isinstance(members, list):
                 referenced_ids.update(members)
+        # The same holds for a sourceless AST reference node (a base type such
+        # as Kotlin's ``MutableList`` that no scanned file defines): it has no
+        # source_file, so eviction never claims it, and once the only file that
+        # referenced it is deleted or rewritten it was left behind with no
+        # edges. Drop it only when it lost its edges in this run; a node that
+        # was already edgeless is what a full build emits too, so it stays.
+        previously_referenced = {
+            endpoint
+            for edge in existing.get("links", existing.get("edges", []))
+            for endpoint in (edge.get("source"), edge.get("target"))
+        }
         preserved_nodes = [
             node
             for node in preserved_nodes
-            if not _is_external_stub(node) or node["id"] in referenced_ids
+            if node["id"] in referenced_ids
+            or not (
+                _is_external_stub(node)
+                or (
+                    not node.get("source_file")
+                    and _is_ast_tier(node)
+                    and node["id"] in previously_referenced
+                )
+            )
         ]
 
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
@@ -2308,6 +2424,33 @@ def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
     return "rendered"
 
 
+def _keep_unchanged_clustered_graph(
+    graph_tmp: Path,
+    existing_graph_data: dict,
+    report_path: Path,
+    report: str,
+    *,
+    same_graph: bool,
+) -> bool:
+    """Keep a matching graph if the report already matches or can be restored."""
+    report_missing = not report_path.exists()
+    if not report_missing:
+        old_report = report_path.read_text(encoding="utf-8")
+        if _report_for_compare(old_report) != _report_for_compare(report):
+            return False
+    if not same_graph:
+        return False
+
+    graph_tmp.unlink(missing_ok=True)
+    if report_missing:
+        write_text_atomic(report_path, report)
+        print(f"[graphify watch] GRAPH_REPORT.md restored in {report_path.parent}")
+        _reconcile_graph_html(report_path.parent, existing_graph_data)
+    else:
+        print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
+    return True
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -2529,9 +2672,12 @@ def _rebuild_code(
             code_only=_code_only,
         )
 
+        report_path = out / "GRAPH_REPORT.md"
+        report_missing = not no_cluster and not report_path.exists()
         if changed_paths is None and not force:
             if (
-                _inputs_unchanged(detected, out / "manifest.json", watch_root)
+                not report_missing
+                and _inputs_unchanged(detected, out / "manifest.json", watch_root)
                 and _build_state_matches(out, _build_state_now)
             ):
                 print(
@@ -2595,6 +2741,8 @@ def _rebuild_code(
                             f"[graphify watch] Incremental: none of the {scanned} scanned "
                             "files differ from the last build."
                         )
+                        if not excluded_rows and not report_missing:
+                            return True
 
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
@@ -2718,6 +2866,7 @@ def _rebuild_code(
             # an incremental rebuild, or their semantic nodes would be wiped.
             semantic_doc_set = {Path(os.path.abspath(p)) for p in semantic_doc_files}
             wanted: list[Path] = []
+            ignore_rules_changed = False
             change_root = Path.cwd().resolve()
             for raw in changed_paths:
                 candidates = _changed_path_candidates(
@@ -2725,6 +2874,12 @@ def _rebuild_code(
                     change_root=change_root,
                     watch_root=watch_root,
                 )
+                if any(
+                    cand.name in {".graphifyignore", ".gitignore"}
+                    and _is_relative_to(cand, watch_root)
+                    for cand in candidates
+                ):
+                    ignore_rules_changed = True
                 tracked = next((cand for cand in candidates if cand.exists() and cand in code_set), None)
                 if tracked is not None:
                     if tracked not in wanted and tracked not in semantic_doc_set:
@@ -2762,8 +2917,13 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
-            if not wanted and not deleted_paths:
-                print("[graphify watch] No tracked code files in change set - skipping rebuild.")
+            # Ignore changes can introduce sources absent from the prior graph.
+            # Cached extraction still avoids reparsing unchanged ASTs.
+            if ignore_rules_changed:
+                wanted = [p for p in code_files if p not in semantic_doc_files]
+            # With an existing graph, an empty batch can still have stale sources
+            # (for example a destination-only rename to an unsupported suffix).
+            if not wanted and not deleted_paths and not existing_graph.exists():
                 return True
             extract_targets = wanted
         else:
@@ -2810,6 +2970,15 @@ def _rebuild_code(
                     extract_targets, ctx_graph.get("nodes", []), project_root,
                     available_paths=code_files,
                     changed_paths=[Path(p) for p in deleted_source_identities],
+                )
+                extract_targets = extract_targets + _id_collision_partners(
+                    extract_targets,
+                    deleted_source_identities,
+                    code_files,
+                    ctx_graph.get("nodes", []),
+                    lambda sf: ctx_paths.absolute_identity(sf, project_root) if sf else None,
+                    Path(watch_root).resolve(),
+                    {Path(os.path.abspath(p)) for p in semantic_doc_files},
                 )
                 ctx_live = {
                     ctx_paths.absolute_identity(str(p), project_root) for p in code_files
@@ -3229,7 +3398,8 @@ def _rebuild_code(
                 )
             except Exception:
                 same_topology = False
-            if same_topology:
+            # A missing report still needs the clustered report generator.
+            if same_topology and not report_missing:
                 try:
                     from graphify.detect import save_manifest
                     # Full-scan save: prune excluded-but-alive rows (#1908);
@@ -3382,7 +3552,6 @@ def _rebuild_code(
         report = generate(G, communities, cohesion, labels, gods, surprises, detection,
                           _lrtc(out), report_root, suggested_questions=questions,
                           built_at_commit=commit, learning=_llfr(out / "graph.json"))
-        report_path = out / "GRAPH_REPORT.md"
         # Split back into the tracked (curated) file and the pending
         # (hub-fallback) sidecar (#3334) -- report/graph.json generation above
         # already used the full, merged `labels` so a fallback-named community
@@ -3397,7 +3566,6 @@ def _rebuild_code(
             return False
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
         same_graph = False
-        same_report = False
         if existing_graph.exists():
             try:
                 check_graph_file_size_cap(existing_graph)
@@ -3423,14 +3591,10 @@ def _rebuild_code(
             except Exception:
                 same_graph = False
         same_graph = same_graph and not legacy_layout
-        if report_path.exists():
-            old_report = report_path.read_text(encoding="utf-8")
-            same_report = _report_for_compare(old_report) == _report_for_compare(report)
-        no_change = same_graph and same_report
-        if no_change:
-            graph_tmp.unlink(missing_ok=True)
-            print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
-        else:
+        keep_graph = _keep_unchanged_clustered_graph(
+            graph_tmp, existing_graph_data, report_path, report, same_graph=same_graph,
+        )
+        if not keep_graph:
             if not _check_shrink(
                 force, existing_graph_data, candidate_graph_data,
                 tmp=graph_tmp,
@@ -3507,14 +3671,14 @@ def _rebuild_code(
         # before graph.json advanced, so a failed or interrupted atomic render
         # remains retryable from the unchanged-topology fast path.
         html_written = False
-        if not no_change:
+        if not keep_graph:
             html_action = _reconcile_graph_html(out, candidate_graph_data)
             html_written = html_action == "rendered"
 
         # Regenerate callflow HTML if the user previously generated one —
         # opt-in by existence so users who never ran callflow-html aren't affected.
         callflow_files = list(out.glob("*-callflow.html"))
-        if callflow_files and not no_change:
+        if callflow_files and not keep_graph:
             try:
                 from graphify.callflow_html import write_callflow_html
                 for cf in callflow_files:
@@ -3528,7 +3692,7 @@ def _rebuild_code(
             except Exception as cf_err:
                 print(f"[graphify watch] callflow HTML update skipped: {cf_err}")
 
-        if not no_change:
+        if not keep_graph:
             print(f"[graphify watch] Rebuilt: {G.number_of_nodes()} nodes, "
                   f"{G.number_of_edges()} edges, {len(communities)} communities")
             products = "graph.json" + (", graph.html" if html_written else "") + " and GRAPH_REPORT.md"
@@ -3741,6 +3905,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     root_config_path = watch_root_for_ignore / RC_FILENAME
     override_snapshot: dict[str, str] = activate_language_overrides(watch_root_for_ignore)
     config_changed = False
+    directory_removed = False
     # Only Linux prunes the recursive watch tree. macOS and Windows keep the
     # recursive schedule, so their handler must not require a `watched` entry.
     manual = sys.platform.startswith("linux")
@@ -3748,13 +3913,19 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending, override_snapshot, config_changed
-            nonlocal ignore_patterns, ignored
+            nonlocal ignore_patterns, ignored, directory_removed
             if event.is_directory:
                 if not manual or _is_read_only_event(event):
                     return
                 path = Path(os.fsdecode(event.src_path)).resolve()
                 if path.parent not in watched:
                     return
+                # Files below a moved/deleted directory may have no individual
+                # events. Reconcile only subtrees that were actually watched.
+                if path in watched and event.event_type in {"deleted", "moved"}:
+                    directory_removed = True
+                    last_trigger = time.monotonic()
+                    pending = True
                 if event.event_type == "created":
                     add_tree(path, emit_existing=True)
                 elif event.event_type == "deleted":
@@ -3767,7 +3938,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             if _is_read_only_event(event):
                 return
-            path = Path(os.fsdecode(event.src_path))
+            path = Path(os.fsdecode(event.src_path)).resolve()
             if manual and (
                 path.parent not in watched or not path.parent.exists()
             ):
@@ -3785,7 +3956,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
-            dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
+            dest_path = Path(os.fsdecode(dest_raw)).resolve() if dest_raw else None
             if path == root_config_path or dest_path == root_config_path:
                 override_snapshot = activate_language_overrides(watch_root_for_ignore)
                 config_changed = True
@@ -3921,10 +4092,14 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 batch = list(changed)
                 changed.clear()
                 config_event, config_changed = config_changed, False
-                print(f"\n[graphify watch] {len(batch)} file(s) changed")
+                directory_event, directory_removed = directory_removed, False
+                if directory_event:
+                    print("\n[graphify watch] A watched directory moved or was removed")
+                else:
+                    print(f"\n[graphify watch] {len(batch)} file(s) changed")
                 # Reapply the observer's snapshot on the dispatch thread.
                 set_language_overrides(override_snapshot)
-                if config_event or _batch_triggers_rebuild(batch):
+                if config_event or directory_event or _batch_triggers_rebuild(batch):
                     try:
                         with _rebuild_timeout():
                             _rebuild_code(watch_path)

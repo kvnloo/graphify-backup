@@ -2,9 +2,133 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
-## 0.9.114 (unreleased)
+## 0.9.122 (2026-11-28)
 
-Performance work on the extract/build/update pipeline. All of these preserve graph output exactly (byte-identical) and the AST cache schema is unchanged; they are pure speedups, largest on big repos.
+A new Shopify/Liquid theme extractor, TypeScript and C++ extractor accuracy, incremental-extraction correctness (two silent-corruption/data-loss fixes), and a batch of robustness and performance work across sixteen community pull requests. The TypeScript, C++, Markdown and Shopify-theme changes alter extraction output, so the AST cache schema bumps (57 to 58) and those inputs re-extract on the first build after upgrading; everything else needs no rebuild.
+
+### Features
+- **shopify** a Shopify theme is turned into a graph: the Liquid extractor reads `.liquid` templates and their `render`/`include`/section references, `templates/*.json` wires sections to blocks, and CSS classes, settings, custom elements and metafields are linked. Pure-stdlib scanners (no new dependencies), gated to a theme root (`layout/theme.liquid`) so non-theme `.css`/`.json` files are unaffected (#5553, #5554, #5555, #5557, thanks @dalexhd).
+
+### Extractor fixes
+- **typescript** a named object type alias extracts its direct function-typed properties (`type Port = { cb: () => void }`) as members alongside method signatures, kept out of bare-call/module lookup (#5525, thanks @rvitaliy).
+- **typescript** a call through a local `const` bound to an explicitly-typed parameter property (`const a = ports.authority; a.m()`) resolves to the property type's exact method, including through closures, fail-closed on unknown/ambiguous/reassigned receivers (#5529, thanks @rvitaliy).
+- **cpp** an export/visibility macro leading a function or variable declaration (`MYLIB_API void f();`) is blanked (byte-length preserving) before parsing, so the declaration and the members after it are no longer dropped (#5550, thanks @Deepjyoti-Sarmah).
+- **cpp** a `/* */` block comment inside a `#define` directive is blanked before parsing so it no longer derails the parse (#5551, thanks @leninworld).
+- **markdown** a file's YAML frontmatter is folded into its AST cache key, so a frontmatter-only edit re-extracts instead of serving the stale body (#5480, thanks @sdivyanshu90).
+
+### Incremental extraction
+- **extract** `graphify extract` now re-extracts JS/TS code when a resolver input changes (a tsconfig alias can retarget an import even when importer bytes are identical), matching a full rebuild instead of leaving stale edges (#5533, thanks @rvitaliy).
+- **extract** a no-op incremental extraction preserves existing manifest stamps, so an edit saved during the scan is still picked up on the next run instead of being silently dropped (#5531, thanks @rvitaliy).
+- **extract** the saved graph is reused during incremental extraction (read once instead of three times) with byte-identical output (#5527, thanks @rvitaliy).
+
+### Correctness & robustness
+- **analyze** `god_nodes` and `surprising_connections` return empty for `top_n <= 0` instead of everything, and non-string node fields no longer crash (#5544, thanks @Gaurav-meena95).
+- **serve** `_path_search_graph` handles mixed int/str node IDs instead of crashing (the serve-side companion to 0.9.121's `graph_diff` fix) (#5543, thanks @Gaurav-meena95).
+- **build** malformed extraction field types are repaired or skipped with a warning instead of crashing assembly (#5539, thanks @sdivyanshu90).
+- **export** the Cypher exporter preserves parallel call sites between the same pair instead of collapsing them to one Neo4j relationship (#5540, thanks @sdivyanshu90).
+- **watch** a removed or moved directory subtree now triggers a rebuild so its stale nodes are pruned (#5479, thanks @sdivyanshu90).
+
+### Performance (output byte-identical)
+- **cluster** `_native_leiden` avoids a `G.copy()` deepcopy and a SubGraphView fallback, and `cohesion_score` avoids a per-call SubGraphView allocation (#5548, #5549, thanks @Gaurav-meena95).
+
+## 0.9.121 (2026-11-26)
+
+A large batch across community pull requests: extractor accuracy (C#, TypeScript, Rust, COBOL, Python), node-id and edge correctness on incremental rebuilds, a self-contained Canvas renderer for large graphs, and a wave of byte-identical performance work. The C#, TypeScript, Rust, COBOL and Python changes alter node/edge output, so the AST cache schema bumps (56 to 57) and those languages re-extract on the first build after upgrading; everything else needs no rebuild.
+
+### Features
+- **serve/viz** `graph.html` gains a self-contained Canvas 2D renderer for large graphs: above the vis-network comfort threshold (and within `--node-limit`/`GRAPHIFY_VIZ_NODE_LIMIT`) it emits a deterministic, community-packed Canvas view with viewport culling and sparse labels at low zoom, embedded as a base64 payload with no external scripts. Small graphs keep the existing vis-network output (#5521, thanks @GwungTz).
+
+### Extractor fixes
+- **csharp** a call through a namespace-qualified receiver (`Acme.Audio.Mixer.Instance.Play()`, `Acme.Audio.Mixer.Reset()`, or a `var m = Acme.Audio.Mixer.Instance; m.Play()` chain, plus null-conditional forms) resolves through the named type the same way the short name under `using` already did, binding the exact namespace and failing closed on an unknown or ambiguous path (#5473, thanks @aliyapici).
+- **typescript** a named object type alias (`type Port = { read(): number }`, including an unqualified `Readonly<{...}>`) retains its method signatures as method nodes so a typed-receiver call resolves to them, while the signatures stay out of bare-call, static-call and module-symbol lookup (#5455, thanks @rvitaliy).
+- **typescript** an extensionless import of a declaration file (`./types/api`, or a tsconfig `paths` alias) resolves to the adjacent `.d.ts`/`index.d.ts` instead of a sourceless stub, with a real implementation file still winning the guess (#5472, thanks @Deepjyoti-Sarmah).
+- **rust** a `use` of a module path or a grouped `self` (`use krate::m::{self, X}`, `use crate::a::b`) resolves to the real module-file node (`m.rs`/`m/mod.rs`) instead of a sourceless bare-name stub, with external-crate paths still failing closed (#5398, thanks @Deepjyoti-Sarmah).
+- **python** a function-local import's shadow climbs every enclosing function scope, so a bare call in a nested def is still shadowed by an outer function's import instead of falling back to a same-named module-level twin (#5421 follow-up, thanks @ayushcodes10).
+- **cobol** a `PERFORM A THRU Z` links every paragraph in the range (not only the endpoints, and nothing outside it); a procedure copybook's own paragraphs and intra-copybook PERFORMs are extracted; and a `PERFORM` between a program and its copybook resolves cross-file, fail-closed on an unknown or ambiguous target (#5424, #5425, #5426, thanks @pavansystems).
+
+### Correctness fixes
+- **incremental** same-stem files (`math.c`/`math.h`, `index.ts`/`index.js`) keep the same node ids on a changed-files rebuild as on a full build: the colliding files are re-extracted together so disambiguation sees the whole group, and a deleted sibling drops its partner back to the bare id (#5464, thanks @0xkaushik-ai).
+- **extract** the XAML code-behind class no longer keeps an absolute-checkout-path id (or duplicates) when only the `.xaml` file is re-extracted; out-of-batch source files are canonicalized in the id-remap (#5466, thanks @0xkaushik-ai).
+- **extract** the decl/def fold's edge de-dup is scoped to the merged ids, so folding a header/impl pair no longer drops unrelated edges (a recursive self-call, or same-stem `.cu`/`.metal` member edges) order-dependently (#5468, thanks @0xkaushik-ai).
+- **watch** the event path is resolved so a manual observer matches events under a symlinked root (#5498, thanks @madhusudanpatnaik).
+- **build** a different-relation edge winner no longer inherits the replaced edge's `also_seen` and score (#5490, thanks @poberherr).
+- **analyze** `graph_diff` handles mixed int/str node IDs and MultiGraph parallel edges instead of crashing or overwriting (#5512, thanks @Gaurav-meena95).
+- **cargo** a member crate's `dependency.workspace = true` resolves inherited deps against the workspace manifest dir rather than the scan root (#5496, thanks @madhusudanpatnaik).
+- **graphdb** a node with a null `file_type` or an edge with a null `relation` no longer crashes label/relation formatting (#5497, thanks @madhusudanpatnaik).
+
+### Performance (output byte-identical)
+- **build** per-file stems and alias work are cached with a sentinel map in `_alias_index`, and edge-endpoint suffixes are memoized per source_file (#5492, #5494, thanks @madhusudanpatnaik).
+- **paths** large top-level JSON lists are written in C-encoded chunks for lower peak memory (#5493, thanks @madhusudanpatnaik).
+- **report** edge and node scans are folded into single passes with a memoized `_real_node` (#5495, thanks @madhusudanpatnaik).
+- **detect** ignore, symlink and paper checks are sped up (3000-char paper read, lexical relative-path containment, a POSIX non-symlink fastpath) (#5499, thanks @madhusudanpatnaik).
+- **cluster** `score_all` is computed in a single O(|E|) pass without per-community SubGraphViews, and canonical edges are passed straight to native Leiden without rebuilding the stable graph (#5510 thanks @Gaurav-meena95, #5401 thanks @Max17190).
+- **export** `to_graphml` fast-paths XML sanitization and cleans nodes/edges in one pass, and the NetworkX loader releases graph rows as it consumes them (#5511 thanks @Gaurav-meena95, #5434 thanks @Max17190).
+- **callflow** archetype keywords are counted in one word-scan pass instead of a regex per keyword (#5433, thanks @Max17190).
+
+## 0.9.120 (2026-11-25)
+
+A batch of resolution, serve, export, clustering and performance fixes across nine community pull requests. The Python function-local-import change alters node/edge output, so the AST cache schema bumps (55 to 56) and Python re-extracts on the first build after upgrading; the other fixes need no rebuild.
+
+- Feat: **serve** a new `affected` MCP tool reports the reverse-dependency blast radius of a symbol (what breaks if you change it), and `query_graph` gains an optional `seeds` argument to start a traversal from known nodes; both resolve a node by name, file path, or id the same way the CLI does (#5254, thanks @ArnabOPP; proposed by @ramarro123).
+- Perf: **query** per-node search fields, degrees and the hub threshold, an integer-indexed adjacency for BFS/DFS, and rendered NODE lines are each computed once per loaded graph and reused by every later query, and document frequency is taken through the trigram index; query output is byte-identical (#5476, thanks @nothariharan).
+- Fix: **python** a bare call inside a function whose name is bound by a function-local import (`from m import x`, `import x`) no longer binds to an unrelated same-named module-level definition in the same file; the import shadows the twin within that function only (#5427, thanks @ayushcodes10).
+- Fix: **python** a function-local import no longer leaks its binding into a sibling function at the same scope, so a same-named call elsewhere in the file resolves to its own target rather than the imported one (#5436, thanks @ayushcodes10).
+- Fix: **watch** the watcher test helper replaces the clock in `watch.py` only, instead of patching the process-wide `time.sleep`, which had broken the subprocess waits a rebuild performs and made the watch tests flaky under the parallel suite (#5444, thanks @Deepjyoti-Sarmah).
+- Fix: **serve** an IPv6 bind host is bracketed in the printed streamable-HTTP URL (`http://[::1]:8080/mcp`), so the connection URL is valid (#5470, thanks @leninworld).
+- Fix: **cluster** `cohesion_score` is bounded to [0.0, 1.0] on a MultiGraph or DiGraph by counting unique connected node pairs rather than parallel or reciprocal edges, so the density invariant holds (#5459, thanks @Gaurav-meena95).
+- Fix: **export** the Cypher, GraphML and SVG exporters create missing destination parent directories (matching the other exporters), and the Cypher writer is atomic so an interrupted write cannot leave a truncated file (#5450, thanks @Gaurav-meena95).
+- Fix: **export** the Obsidian, canvas, Cypher and SVG exporters tolerate a node whose label is null or non-string instead of crashing (#5457, thanks @Gaurav-meena95).
+
+## 0.9.119 (2026-11-24)
+
+A fix for a core-install regression in 0.9.118, plus a batch of resolution, extractor, export and performance fixes across ten community pull requests. The Python, Go and COBOL changes alter node/edge output, so the AST cache schema bumps (53 to 55) and those languages re-extract on the first build after upgrading; the other fixes need no rebuild.
+
+- Fix: **serve** graph commands (`query`, `path`, `explain`, `affected`, `benchmark`) run again on a core install without the `[mcp]` extra. 0.9.118 imported `anyio` (an mcp-extra-only dependency) at the top of `graphify/serve.py`, so loading it raised `ModuleNotFoundError` for those commands; the import is moved back inside the MCP server path where `anyio` is always present (#5320, thanks @Deepjyoti-Sarmah).
+- Fix: **python** a call to a name that a lambda parameter shadows no longer binds to a module-level definition inside the lambda body; the shadow is scoped to the lambda body only, so a genuine outer call elsewhere still resolves (#5417, thanks @melhusl-hs).
+- Fix: **python** a call made through a function parameter (the enclosing function's own parameter, or one captured from an outer function) is likewise no longer bound to a module-level definition of that name; the parameter is a runtime callback whose target is unknown (#5418, thanks @Deepjyoti-Sarmah).
+- Fix: **go** a local variable that shadows an imported package name resolves as a local receiver, not the package, so its member calls bind to the local's type; the shadow is lexically scoped and an unknown local fails closed rather than falling back to a package call (#5409, thanks @sdivyanshu90).
+- Fix: **go** a type declared across sibling files in a package folds to one node per directory even when a same-named package exists elsewhere, so its member calls resolve instead of being dropped as ambiguous; the two same-named packages stay distinct (#5304 follow-up, thanks @PravalVerma).
+- Fix: **cobol** a `GO TO` now emits a `calls` edge to the paragraph it jumps to (including each target of `GO TO ... DEPENDING ON`), so a paragraph reached only by a jump is no longer orphaned; an unknown target fails closed (#5423, thanks @pavansystems).
+- Fix: **wiki** article bodies link cross-references by node ID rather than label, so two nodes sharing a label link to their own articles instead of collapsing onto the first-registered one; the link text stays the human-readable label (thanks @azizur100389).
+- Fix: **affected** the reverse traversal on an undirected graph walks incident edges instead of scanning the whole edge list, fixing a dropped-orientation bug (it returned nothing on an annotated undirected graph) and turning an O(edges) step into O(degree); the directed path that the CLI always uses is unchanged (#5437, thanks @Gaurav-meena95).
+- Perf: **query** a CLI full-graph scan skips query terms that are provably absent from the corpus (no trigram present), so a long question no longer wastes time scoring terms that can match nothing; query results are byte-identical (#5429, thanks @Max17190).
+- Perf: **build** file-label disambiguation for shared basenames is computed with a suffix counter instead of per-file all-pairs comparison, turning an O(files²) step into a near-linear one (~260x on a 2,000-file collision) with byte-identical labels (thanks @Gaurav-meena95).
+
+## 0.9.118 (2026-11-23)
+
+A batch of extractor, resolution, serve, export, clustering and reporting fixes across fourteen community pull requests. The Objective-C, C and C# changes alter node/edge output, so the AST cache schema bumps (51 to 53) and the first build after upgrading re-extracts the affected languages; the other fixes need no rebuild.
+
+- Fix: **csharp** a local, parameter or field named `partial`, `required`, `async`, `nint`, `nuint` or `with` (contextual keywords) that tree-sitter-c-sharp mis-parses where a statement starts with it no longer derails the file; it is rewritten to its verbatim `@name` form before parsing (byte-length preserving), so the enclosing type and the members after it are kept instead of being silently dropped (#5043, thanks @ThatAblaze).
+- Fix: **c** a call through a struct function-pointer field (`ops->run()`, `ops.run()`) no longer fabricates a `calls` edge to a same-named free function; the field name is no evidence of the pointer's runtime target, so the guess is dropped. A plain direct call still resolves (#5410, thanks @sdivyanshu90).
+- Fix: **objc** an Objective-C method whose name folds onto a sibling's id within one `@interface`/`@implementation`/`@protocol` (a leading/trailing `_` as in `-setup`/`-_setup`, or a case-only difference) gets its own salted node id instead of overwriting it; the declaration and definition of one method still share a single node (#5390, thanks @ayushcodes10).
+- Fix: **go** a struct field's owner type is scoped to its own package, so a field of a type whose name is declared in two packages binds to the right one and its member calls resolve instead of being dropped as ambiguous (#5408, thanks @azizur100389).
+- Fix: **extract** a Svelte import that comes through an `export *` barrel now resolves to the real defining module, matching plain `.ts`. The cross-file resolver was masking `.vue` but not `.svelte`, so the Svelte `<script>` imports were lost to a template parse error; chained barrels resolve and ambiguous re-exports fail closed. Run `graphify extract . --force` once to repair an already-cached graph (#5403, thanks @Max17190).
+- Fix: **extract** audio and video files that are detected but not extracted (headless extract has no transcription step) are now reported in the summary instead of silently vanishing, matching the other skip notices; no nodes are fabricated for them (#5076, thanks @ayushcodes10).
+- Fix: **sections** `get_section`'s retry no longer reuses the full graph's trigram search index. The retry ran against a networkx subgraph view whose `.graph` dict is the same object serve caches the index on, so the retry searched stale, out-of-section ids and raised `KeyError`; the retry view now gets its own graph metadata, which also removes a shared-graph index-corruption hazard for concurrent serve callers (#5385, thanks @Deepjyoti-Sarmah).
+- Fix: **serve** the MCP server loads `graph.json` off the event loop, so a large graph reload no longer blocks concurrent requests; a request during a reload is served the current graph and a corrupt reload leaves the old graph intact (#5371, thanks @Deepjyoti-Sarmah).
+- Fix: **update** a clustered `GRAPH_REPORT.md` that is deleted while the graph is otherwise unchanged is regenerated instead of being skipped by the no-change gate; the graph itself is left byte-identical (restored from the partition cache) so there is no needless rebuild (#5402, thanks @Max17190).
+- Fix: **query** image nodes are demoted in seed scoring alongside documents and papers, so a caption-rich image no longer out-seeds real code for a query whose terms it happens to repeat (#445, thanks @ayushcodes10).
+- Fix: **export** export filenames honor the target filesystem's `NAME_MAX` (probed via `pathconf`, not assumed to be 255), so `graphify export obsidian/wiki/canvas` no longer aborts with `ENAMETOOLONG` on filesystems that report a lower limit such as eCryptfs (143); long names are truncated with a hash suffix and internal links use the shortened names (#2109, thanks @Synvoya).
+- Fix: **wiki** directed-graph exports now include incoming edges, so a community audit no longer under-reports confidence (an incoming AMBIGUOUS edge could be invisible while the page read "EXTRACTED 100%"). On god-node pages incoming edges are marked `(incoming)` so a relation like `calls` is not read backwards (#5369, thanks @sdivyanshu90).
+- Fix: **config** `.graphifyrc` now parses `demote_docs` / `query_demote_docs`, so a project can set doc demotion in the rcfile instead of only via the CLI flag; an explicit flag still overrides it (#5290, thanks @debojyoti10CC).
+- Perf: **cluster** community-overlap counting during a rebuild is computed from shared nodes in one pass instead of intersecting every pair of communities, turning an O(communities squared) step into a linear one with byte-identical results (#5382, thanks @Max17190).
+
+## 0.9.115 (2026-11-21)
+
+A security fix for a forced-SMB-authentication issue on Windows (GHSA-g6c9-j4vm-mwq4), plus a batch of extractor, resolution and incremental-update fixes. The extractor fixes that change output share one AST cache schema bump (50 to 51), so the first build after upgrading re-extracts the affected languages.
+
+- Security: **extract/detect** indexing a repository no longer stats a corpus-chosen path that resolves outside the scan root. A `.sh` file's `source` line or script invocation (`source \\host\share\x`, `source //host/share/x`, `python3 //host/share/x.py`) and a `.git` file naming a UNC `gitdir:`/`commondir` previously made the OS resolve the attacker-chosen path; on Windows that coerces outbound SMB authentication to the named host and leaks a NetNTLMv2 response, on default offline settings with no API key or LLM call. Each probe is now gated: a corpus path is resolved and stat-ed only when it stays within the scan root, and a UNC path is refused before it is ever resolved. Legitimate in-tree `source` lines and local linked-worktree/submodule `.git` files are unaffected. The bash extractor drops the out-of-tree edges it used to emit, so the AST cache schema is bumped and bash files re-extract on the first build after upgrading. Same class as the earlier GHSA-pcc4-rvhr-2pr8, different sink (GHSA-g6c9-j4vm-mwq4, thanks @Torch4084).
+- Fix: **path** `graphify path` (and the MCP `shortest_path` tool) resolves an exact node id before tier matching, so an id that tokenizes the same as another node's label is no longer refused as ambiguous (#5367, thanks @Arav-Arun).
+- Fix: **python** an unresolved cross-file call through an explicit `from ... import ...` is constrained to the imported name and module, so an external import no longer binds to an unrelated same-named repository symbol and an alias cannot acquire a second target named after the alias (#5229, thanks @Arav-Arun).
+- Fix: **rust** an impl-block method, associated const or static whose name folds onto a sibling's id (`fn foo`/`fn _foo`, `fn e`/`fn E`) gets a distinct salted node id instead of overwriting it, matching the salting already done elsewhere (#5380, thanks @ayushcodes10).
+- Fix: **csharp** a call through a static member of a type (`Audio.Instance.Click()`, `Audio.Instance?.Click()`, or `var a = Audio.Instance; a.Click()`) resolves through the member's declared type instead of being dropped; it fails closed on an unknown or ambiguous type (#5376, thanks @ArnabOPP).
+- Fix: **php** member calls resolve in files remapped to PHP (for example `.inc` via `.graphifyrc`) and through the `inherits`/trait chain (nearest level wins, ties fail closed), and every call site to one callee is kept (the build folds repeats into `also_seen`) (#5362, thanks @livingforelvis).
+- Fix: **watch** a hook/incremental rebuild reconciles persisted sources against the current corpus even when no changed file is eligible for extraction, so a corpus-only change (a destination-only rename, or an in-scope `.graphifyignore`/`.gitignore` edit) no longer leaves the graph stale (#5331, thanks @sdivyanshu90).
+- Fix: **update** an oversized JSON file is reported as skipped rather than failed, so it is stamped and a genuinely unchanged `graphify update` short-circuits at the early no-change gate instead of re-running extraction (#5131, thanks @madhusudanpatnaik).
+
+## 0.9.114 (2026-11-20)
+
+Performance work on the extract/build/update pipeline, plus a batch of extractor and build fixes. Every entry marked Perf preserves graph output exactly (byte-identical); the extractor fixes change output and share one AST cache schema bump (see the note at the end).
 
 - Perf: **ids** `normalize_id` gets an ASCII fast-path, pre-compiled regexes and an LRU cache, so the common (ASCII, repeated) identifier case skips the Unicode normalization loop. ~1.26x on the compute path and a large win on repeated ids, which recurs heavily across a corpus.
 - Perf: **cache** `save_cached` builds the portable on-disk payload copy-on-write instead of `copy.deepcopy`-ing every per-file result; ~20% faster on the cache-write transform, scaling with per-file graph size. The input is never mutated and the on-disk bytes are identical.
@@ -12,6 +136,20 @@ Performance work on the extract/build/update pipeline. All of these preserve gra
 - Perf: **extract** the cross-file resolution finalize builds its shared node/edge indexes in a few fused passes instead of ~6 independent full scans of the graph; ~15% faster on the finalize stage.
 - Perf: **watch** the no-change topology comparison uses an order-independent content hash computed in one pass instead of sorting and re-serializing the whole graph; ~1.4x on that compare.
 - Perf: **cluster** the community partition is cached by a topology hash and reused when the graph is unchanged (~9x on a cluster cache hit), and the deterministic edge-sort key drops a per-edge `json.dumps` in favour of a cheap tuple key (identical ordering).
+- Perf: **analyze** `suggest_questions`' betweenness centrality now runs a flat-array Brandes implementation instead of networkx's dict-based one, with bit-for-bit identical scores; ~2.6x faster, growing with graph size (#5303, thanks @Max17190).
+- Perf: **watch** each preserved source path is rebased once per incremental update instead of recomputed per node and edge; the update output is byte-identical (#5322, thanks @Max17190).
+- Fix: **java** a field or class annotated with Lombok `@Getter` gets the synthesized `getX()`/`isX()` getter node javac sees, so `obj.getX()` resolves to it; boolean fields use `isX`, `@Getter(AccessLevel.NONE)` is respected, a hand-written getter is not duplicated, and a non-Lombok `@Getter` is ignored (#5148, thanks @Deepjyoti-Sarmah).
+- Fix: **kotlin** a member call on a receiver with a declared type (parameter, property, `val x: T`, or `val x = T()`) binds to that type's method across files instead of the last same-named method in the file, and interface calls dispatch to their implementers; an ambiguous or unknown receiver fails closed (#5355, thanks @xiongjianxu).
+- Fix: **sql** a PostgreSQL PL/pgSQL routine body that the grammar only parses through ERROR recovery (`RETURN QUERY SELECT ... FROM t`) has its table reads recovered as `reads_from` edges instead of dropped (#5349, thanks @Deepjyoti-Sarmah).
+- Fix: **build** when an AST-extracted edge and a semantic (LLM) copy of the same edge tie, the deterministic EXTRACTED edge is kept, so a later docs `--update` no longer deletes a code edge that a semantic copy had overwritten (#5334, thanks @Ildar-gn).
+- Fix: **sql** a T-SQL procedure whose header the grammar only partly parses (tree-sitter-sql 0.3.12+ misreads the name, absorbing unparenthesised params or a `""`/`]]` escape) yields a single routine node instead of a duplicate under the misread id; a real routine sharing the misread's line is kept (#5236, thanks @Deepjyoti-Sarmah).
+- Fix: **vbnet** a method declared after a multi-line string literal is no longer dropped: the file is reparsed with multi-line strings flattened to a line-preserving placeholder first, so an unterminated string on one line no longer swallows the rest of the class; single-line files are parsed unchanged (#5320, thanks @Deepjyoti-Sarmah).
+- Fix: **cpp** a `std::`-qualified type (`std::chrono::seconds`, `std::vector<T>`) is no longer rewired onto a same-named project symbol; the std reference gets its own sourceless stub the corpus rewire skips, while the std type's template arguments still resolve to the project's own types (#5219, thanks @deba2k5).
+- Fix: **python** a plain `import mod` where `mod` sits on a `sys.path.insert(...)` directory (a non-package script dir) now binds `mod.func()` to the `func` function node, matched to the unique file on that path and failing closed on ambiguity or a stdlib name; a `calls` edge is no longer aliased onto a file node (#5253, thanks @madhusudanpatnaik).
+- Fix: **serve** a query that filters on the `call` relation now keeps cross-repo `calls` edges (written as `relation=calls, context=cross_repo`), which were silently dropped by the context-only filter (#5257, thanks @LHopitalOne).
+- Fix: **build** a member's structural `method`/`contains` edge to its owner is kept over an opposite-direction member-usage edge (a method reading its class's own static property or constant), so the member no longer vanishes from the type's walk; non-usage relations (inherits/implements) keep the existing rule (#2391, thanks @livingforelvis).
+
+The AST cache schema is bumped to 50; warm caches re-run the affected Kotlin, Java, SQL, VB.NET, C++ and Python (sys.path import) extractions.
 
 - Change: **dsh** `graphify dsh install` now checks each profile's installed bridge copy and its version instead of trusting the `package.json` declaration, names the profiles it found, and exits 2 when none of them can mount the bridge. Previously an install with no usable bridge printed the add command but still reported success, so scripts and users saw a green result over an inert guard.
 - Add: **dsh** `graphify dsh doctor` diagnoses the wiring and repairs nothing by default; `graphify dsh doctor --fix` adds the pinned bridge to every dsh profile through `dsh plugin add`, rewrites missing skill/hook/overlay wiring while keeping user hook entries and the existing `--strict` choice, reports a double mount instead of silently choosing a scope, and re-checks. The default is read-only for CI and post-upgrade audits.

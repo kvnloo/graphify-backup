@@ -63,9 +63,50 @@ Absolute and relative spellings and symlinked scan roots identify the same
 corpus entry; distinct symlink aliases inside that root remain separate entries.
 Excluding one alias must preserve any still-included target or sibling alias.
 
+Incremental CLI extraction shares one read of the saved graph for source
+pruning, recovery of manifest entries with missing output, and AST resolution
+context. Unchanged runs skip building resolver context. Removals and exclusions
+can still schedule AST work to reconcile surviving declarations and IDs.
+
 When an import target ID collides with a C-family header, an explicit target
 path takes priority. Unhinted native includes keep the header fallback. Other
 languages require a unique compatible file candidate before remapping.
+
+Hook rebuilds reconcile persisted sources against the current corpus even
+when no changed file is eligible for extraction. Changes to in-scope ignore
+files also refresh the eligible AST corpus so newly included files can enter
+the graph.
+
+`graphify extract` re-extracts all in-scope code when a tracked JS/TS resolver
+input is added, edited, deleted or leaves the scan. The resolvers read the
+fresh AST batch without context from the saved graph, and the usual merge
+preserves existing semantic records. Recognized lockfiles are tracked in the
+manifest and stay outside the extraction corpus. An incomplete AST refresh
+leaves the previous manifest in place so the refresh can retry.
+
+Wiki community audits and relationships on directed graphs include incoming
+and outgoing edges. Each incident edge contributes once per community,
+including distinct reciprocal and parallel edges.
+
+C calls through struct function-pointer fields stay unresolved unless evidence
+identifies the target. A bare name match is insufficient for field callees.
+AST cache schema 53 retires older call facts.
+
+Go resolves a selector against its visible lexical binding before considering
+a same-named import. An unknown local receiver does not resolve as a package.
+AST cache schema 54 retires older call facts.
+
+Required extraction fields use string IDs, labels, relations and source paths.
+Assembly retains numeric-ID compatibility, skips malformed identities or
+relations and uses existing fallback rules for missing display and source data.
+Cypher file export preserves node and relationship source attribution.
+Parallel relationships receive distinct ordinals within each directed
+endpoint pair and relationship type, so the same script can be replayed.
+The ordinals apply to that exported snapshot.
+Linux watch reconciles the corpus after a watched subtree moves or is
+removed, even when watchdog sends only a directory event.
+Markdown AST cache keys include frontmatter because extraction records
+page metadata and wikilinks. Semantic keys retain the body-only digest.
 
 ## Extraction output schema
 
@@ -74,6 +115,12 @@ and deliberate declines. `failed_sources` overrides that authority in both raw
 and clustered incremental merges, preserving the source's last good AST records.
 The CLI reports incompleteness and clears failed sources' manifest hashes so a
 later successful extraction can replace those records normally.
+
+When incremental `extract --no-cluster` dispatches no files, the manifest
+still drops stale rows but retains the existing content stamps. Re-reading
+sources at that point could stamp an edit made after detection even though the
+graph still describes the old bytes. A timestamp-only touch keeps the previous
+stamp, so later scans still compare content while the file has the touched mtime.
 
 Semantic response recovery requires one authoritative graph fragment. Multiple
 independent nonempty candidates or a top-level array of two or more fragments
@@ -92,6 +139,25 @@ its already-qualified class labels; TypeScript namespace paths qualify their
 contained type IDs. Type metadata records a label-based `type_path`, including
 C# generic arity. Exported field tables use this path and namespace, not raw
 node IDs, to survive cache relocation and corpus ID remapping.
+
+TypeScript object type aliases own nodes for direct method signatures and
+properties with an explicit function type. This includes inline objects wrapped
+in an unqualified `Readonly` when the alias's scope does not shadow that name.
+The extractor retains each member's source location. Nested object members,
+other wrappers, and properties whose callability requires type resolution stay
+outside this extraction. These declarations can be reached through a resolved
+typed receiver and are excluded from bare call lookup. AST cache schema 58
+invalidates cached extractions that omitted function-typed properties.
+
+TypeScript also resolves a call through a local `const` initialized from one
+property of an explicitly typed parameter, including calls inside a closure.
+The parameter's annotation can be an object literal or a non-generic object
+type alias in the same file, with the same unshadowed `Readonly` support.
+The property needs a direct, required signature with a simple type name that
+resolves to a same-file declaration or an unaliased named import. Receiver and
+parameter bindings follow lexical scope. The call links to the type's exact
+method as `INFERRED`. Destructuring, property chains and other type expressions
+are outside this rule. AST cache schema 58 refreshes the receiver facts.
 
 Java preserves package/import context for qualified receivers, typed
 locals/parameters/fields, casts, and declared factory returns. Nested member
@@ -119,6 +185,28 @@ AST cache schema 47 retires flat nested IDs and incomplete scope facts.
 Unchanged type metadata is preserved by CLI/watch incremental resolution.
 Existing persisted graphs and source-evidence artifacts with old IDs require
 a full code rebuild: `graphify extract . --code-only --force`.
+
+Unresolved Python direct calls through unconditional top-level `from ... import ...`
+statements constrain name-based fallback to the imported name and module. An
+external import does not bind to an unrelated same-named corpus symbol, and an
+alias cannot acquire a second target named after the alias. This guard runs after
+per-file cache loading, including on changed-file extractions with unchanged
+resolution context; it does not change callback or function-local import handling.
+Explicitly supplied callers outside the scan root retain their existing fallback.
+Previously emitted false edges are removed when their caller is re-extracted.
+The binding is constrained to the module the import names directly; a call through
+a plain (non-package) module that re-exports a same-named symbol from elsewhere is
+left unresolved rather than chased one hop further, so a genuinely ambiguous
+re-export is dropped instead of guessed (package `__init__` re-exports still
+resolve through the symbol-resolution pass).
+
+A Python lambda parameter shadows same-named callables in its body. Bare calls
+through that parameter and references to it as a callback skip both in-file
+lookup and corpus fallback. The binding check applies Python's Unicode
+identifier normalization and class-private name mangling. A lambda's own
+parameters do not shadow names in its default expressions.
+AST cache schema 54 invalidates fragments built before this rule. For an
+existing graph, run `graphify update . --force` to refresh unchanged callers.
 
 Maven manifest ingestion parses XML namespace declarations before normalizing
 tags in the root namespace for package and dependency lookups. Default and
@@ -410,6 +498,25 @@ from a member spelled `This`. A user-defined operator or conversion is a
 `.operator +()` / `.operator int()` node owned through `method`, with id
 `_make_id(type_id, "operator", sha1(signature)[:6])`, since several conversions
 share one parameter list. Existing ids do not move. AST cache schema 40.
+
+A C# call receiver written as a dotted path of identifiers
+(`Acme.Audio.Mixer.Reset()`, `Audio.Mixer.Instance.Play()`, `?.` forms, or a
+`var` initialized from such a path) is read as a type path when no local,
+parameter, or field/property visible through the caller's type, its bases,
+enclosing types or `using static` is named like its head. A type or alias head
+follows the qualified-name rules above; any other head is a namespace, bound at
+the innermost enclosing namespace that declares it, with no fallback outward.
+The whole path naming a type is a static call (`EXTRACTED`); a type path plus
+one static member types the receiver by that member's declared type
+(`INFERRED`), as `T.P.M()` does. A head that is both a type and a namespace,
+a head that any nested type in the corpus is named like (whether it would read
+as a type or as a namespace), and a path whose two readings both resolve stay
+unlinked. `global::` receivers and longer static-member chains are not read.
+The head check shares the limits of the receiver table it reuses: a name bound
+only by a `catch` clause, a pattern, a `using`/`for` declaration, a query range
+variable or a primary-constructor parameter, a member inherited from a base
+type outside the corpus, and a type brought in by a `using` directive inside a
+namespace block from outside the corpus are not seen as hiding a namespace.
 
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
