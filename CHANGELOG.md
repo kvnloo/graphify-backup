@@ -14,7 +14,7 @@ Performance work on the extract/build/update pipeline. All of these preserve gra
 - Perf: **cluster** the community partition is cached by a topology hash and reused when the graph is unchanged (~9x on a cluster cache hit), and the deterministic edge-sort key drops a per-edge `json.dumps` in favour of a cheap tuple key (identical ordering).
 
 - Change: **dsh** `graphify dsh install` now checks each profile's installed bridge copy and its version instead of trusting the `package.json` declaration, names the profiles it found, and exits 2 when none of them can mount the bridge. Previously an install with no usable bridge printed the add command but still reported success, so scripts and users saw a green result over an inert guard.
-- Add: **dsh** `graphify dsh doctor` now repairs as well as reports. It adds the pinned bridge to every dsh profile through `dsh plugin add`, rewrites missing skill/hook/overlay wiring while keeping user hook entries and the existing `--strict` choice, reports a double mount instead of silently choosing a scope, and re-checks; `graphify dsh doctor --check` stays read-only for CI and post-upgrade audits.
+- Add: **dsh** `graphify dsh doctor` diagnoses the wiring and repairs nothing by default; `graphify dsh doctor --fix` adds the pinned bridge to every dsh profile through `dsh plugin add`, rewrites missing skill/hook/overlay wiring while keeping user hook entries and the existing `--strict` choice, reports a double mount instead of silently choosing a scope, and re-checks. The default is read-only for CI and post-upgrade audits.
 
 ## 0.9.113 (2026-11-19)
 

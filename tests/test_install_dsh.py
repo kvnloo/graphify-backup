@@ -6,8 +6,8 @@ hooks.json - so an install that writes the skill alone is inert. These tests pin
 the three-artifact install, the DSH-specific hook shape (lowercase matchers,
 seconds timeout, advisory unless `--strict`), that uninstall/merge never touch a
 user's own hook entries or YAML, that the install fails loudly (exit 2) when no
-profile can actually mount the bridge, and that `graphify dsh doctor` repairs the
-bridge and the wiring, or reports read-only under `--check`.
+profile can actually mount the bridge, and that `graphify dsh doctor` diagnoses
+read-only by default while `--fix` repairs the bridge and the wiring.
 """
 import json
 import os
@@ -509,7 +509,7 @@ def test_doctor_installs_a_missing_bridge(bare_scratch, tmp_path, monkeypatch, c
     _declare_bridge(dsh_home)
     _fake_dsh(tmp_path, monkeypatch)
 
-    assert _dsh_doctor(project) == 0
+    assert _dsh_doctor(project, fix=True) == 0
 
     log = (tmp_path / "dsh-args.log").read_text(encoding="utf-8").split()
     assert log == ["plugin", "--profile", "web", "add", BRIDGE]
@@ -524,13 +524,13 @@ def test_doctor_upgrades_a_stale_bridge(bare_scratch, tmp_path, monkeypatch, cap
     _add_bridge(dsh_home, version="0.0.1-rc.5")
     _fake_dsh(tmp_path, monkeypatch)
 
-    assert _dsh_doctor(project) == 0
+    assert _dsh_doctor(project, fix=True) == 0
 
     out = capsys.readouterr().out
     assert "0.0.1-rc.5 is older than the pinned" in out
     assert (dsh_home / "profiles" / "web" / "node_modules" / "@deepseek-ai"
             / "dsh-hooks-claude-code" / "package.json").is_file()
-    assert _dsh_doctor(project, check=True) == 0
+    assert _dsh_doctor(project) == 0
 
 
 def test_doctor_repairs_every_profile(bare_scratch, tmp_path, monkeypatch, capsys):
@@ -540,7 +540,7 @@ def test_doctor_repairs_every_profile(bare_scratch, tmp_path, monkeypatch, capsy
     _declare_bridge(dsh_home, "headless")
     _fake_dsh(tmp_path, monkeypatch)
 
-    assert _dsh_doctor(project) == 0
+    assert _dsh_doctor(project, fix=True) == 0
 
     log = (tmp_path / "dsh-args.log").read_text(encoding="utf-8").split()
     assert log.count("plugin") == 2                      # one add per profile
@@ -553,7 +553,7 @@ def test_doctor_writes_missing_wiring(scratch, capsys):
     """A resolvable bridge with no overlay/hooks/skill is repaired, not just reported."""
     project, _ = scratch
 
-    assert _dsh_doctor(project) == 0
+    assert _dsh_doctor(project, fix=True) == 0
 
     assert (project / ".dsh" / "hooks.json").is_file()
     assert (project / ".dsh" / "graphify.cordis.yml").is_file()
@@ -569,7 +569,7 @@ def test_doctor_keeps_the_strict_policy_when_repairing(scratch, monkeypatch):
     install("dsh", project=True, strict=True)
     (project / ".dsh" / "graphify.cordis.yml").unlink()
 
-    assert _dsh_doctor(project) == 0
+    assert _dsh_doctor(project, fix=True) == 0
     assert (project / ".dsh" / "graphify.cordis.yml").is_file()
     commands = _commands(_hooks(project / ".dsh" / "hooks.json")["PreToolUse"])
     assert commands and all(command.endswith("--strict") for command in commands)
@@ -580,7 +580,7 @@ def test_doctor_without_dsh_cannot_fix_and_says_so(bare_scratch, tmp_path, monke
     _declare_bridge(dsh_home)
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
 
-    assert _dsh_doctor(project) == 1
+    assert _dsh_doctor(project, fix=True) == 1
 
     out = capsys.readouterr().out
     assert "cannot repair" in out and "not on PATH" in out
@@ -599,12 +599,13 @@ def test_doctor_reports_an_active_install(scratch, capsys):
     assert "graphify-hooks" in out
 
 
-def test_doctor_check_is_read_only(bare_scratch, capsys):
+def test_doctor_is_read_only_by_default(bare_scratch, capsys):
     project, dsh_home = bare_scratch
 
-    assert _dsh_doctor(project, check=True) == 1
+    assert _dsh_doctor(project) == 1
     out = capsys.readouterr().out
     assert "(read-only)" in out
+    assert "--fix" in out                 # the default names the repair entry point
     assert "NOT ACTIVE" in out
     assert not dsh_home.exists()          # no profile, session, or cache created
     assert not (project / ".dsh").exists()  # no overlay written
@@ -630,7 +631,7 @@ def test_doctor_names_a_stale_bridge(bare_scratch, capsys):
         install("dsh", project=True, project_dir=project)
     capsys.readouterr()
 
-    assert _dsh_doctor(project, check=True) == 1
+    assert _dsh_doctor(project) == 1
     out = capsys.readouterr().out
     assert "0.0.1-rc.5 (stale" in out
 
@@ -646,13 +647,35 @@ def test_doctor_subcommand_exits_with_its_verdict(scratch, monkeypatch, capsys):
     assert error.value.code == 0
 
 
-def test_doctor_subcommand_check_is_read_only(scratch, monkeypatch, capsys):
+def test_doctor_subcommand_is_read_only_by_default(scratch, monkeypatch, capsys):
     project, _ = scratch
     (project / ".dsh").mkdir(exist_ok=True)  # no wiring yet
 
+    monkeypatch.setattr(sys, "argv", ["graphify", "dsh", "doctor"])
+    with pytest.raises(SystemExit) as error:
+        dispatch_install_cli("dsh")
+    assert error.value.code == 1
+    out = capsys.readouterr().out
+    assert "(read-only)" in out
+    assert "--fix" in out
+    assert not (project / ".dsh" / "hooks.json").exists()
+
+
+def test_doctor_subcommand_fix_repairs(scratch, monkeypatch, capsys):
+    project, _ = scratch
+    (project / ".dsh").mkdir(exist_ok=True)  # no wiring yet
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "dsh", "doctor", "--fix"])
+    with pytest.raises(SystemExit) as error:
+        dispatch_install_cli("dsh")
+    assert error.value.code == 0
+    assert (project / ".dsh" / "hooks.json").is_file()
+
+
+def test_doctor_no_longer_accepts_check(scratch, monkeypatch, capsys):
+    """The read-only form is the default, so `--check` is gone rather than aliased."""
     monkeypatch.setattr(sys, "argv", ["graphify", "dsh", "doctor", "--check"])
     with pytest.raises(SystemExit) as error:
         dispatch_install_cli("dsh")
     assert error.value.code == 1
-    assert "(read-only)" in capsys.readouterr().out
-    assert not (project / ".dsh" / "hooks.json").exists()
+    assert "unknown dsh option '--check'" in capsys.readouterr().err

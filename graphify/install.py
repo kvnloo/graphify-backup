@@ -1108,7 +1108,7 @@ def install(
     """Install the graphify integration for *platform*.
 
     A dsh install that cannot resolve a mountable bridge exits 2 rather than
-    claiming success; `graphify dsh doctor` is the command that adds it.
+    claiming success; `graphify dsh doctor --fix` is the command that adds it.
     """
     _print_banner()
     dsh_active = True
@@ -1192,7 +1192,7 @@ def install(
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
 
     if not dsh_active:
-        print("dsh install is NOT active yet: run `graphify dsh doctor` to add the bridge, "
+        print("dsh install is NOT active yet: run `graphify dsh doctor --fix` to add the bridge, "
               "then relaunch dsh", file=sys.stderr)
         sys.exit(2)
 
@@ -2621,7 +2621,7 @@ def _print_dsh_activation(*, project: bool, overlay: Path) -> bool:
             print("  no dsh profile exists yet; run `dsh` once to create one, then add the")
             print(f"  bridge to it: {_dsh_activation_hint()}")
         print("  a bare `latest` is older and predates the event contract these hooks use.")
-        print("  or run `graphify dsh doctor` to add it and repair the rest of the wiring.")
+        print("  or run `graphify dsh doctor --fix` to add it and repair the rest of the wiring.")
     print()
     if project:
         print("Mount the overlay from the repo root, then restart dsh:")
@@ -2708,7 +2708,7 @@ def _dsh_repair_bridge() -> bool:
     report = _dsh_bridge_report()
     if not report:
         print("  cannot repair    ->  no dsh profile exists yet; run `dsh` once, then "
-              "re-run `graphify dsh doctor`")
+              "re-run `graphify dsh doctor --fix`")
         return False
     blocking = [name for name, (state, _version) in report.items() if state != _DSH_BRIDGE_OK]
     if not blocking:
@@ -2862,24 +2862,27 @@ def _print_dsh_verdict(diagnosis: dict, project_dir: Path) -> None:
         print(f"  warning          ->  {warning}")
 
 
-def _dsh_doctor(project_dir: Path | None = None, *, check: bool = False) -> int:
-    """Diagnose the dsh wiring, and by default repair it.
+def _dsh_doctor(project_dir: Path | None = None, *, fix: bool = False) -> int:
+    """Diagnose the dsh wiring; repair it only when `fix` is true.
 
-    Repairs are additive and idempotent: the pinned bridge is added to every
-    profile that cannot mount it, and the active scope's skill, hook config and
-    overlay are rewritten by the same writers `graphify dsh install` uses (user
-    hook entries and the existing --strict choice survive). A double mount is
-    reported but never silently removed: which scope to keep is the user's call.
-    `check=True` diagnoses without writing, for CI and post-upgrade audits.
+    The default is read-only: it reports the wiring and writes nothing, for CI
+    and post-upgrade audits. With `fix=True` the repairs are additive and
+    idempotent: the pinned bridge is added to every profile that cannot mount
+    it, and the active scope's skill, hook config and overlay are rewritten by
+    the same writers `graphify dsh install` uses (user hook entries and the
+    existing --strict choice survive). A double mount is reported but never
+    silently removed: which scope to keep is the user's call.
     """
     project_dir = project_dir or Path(".")
     diagnosis = _dsh_diagnose(project_dir)
-    print("graphify dsh doctor" + (" (read-only)" if check else ""))
+    print("graphify dsh doctor" + ("" if fix else " (read-only)"))
     for label, value in diagnosis["rows"]:
         print(f"  {label:<21} ->  {value}")
 
-    if check:
+    if not fix:
         _print_dsh_verdict(diagnosis, project_dir)
+        if diagnosis["problems"]:
+            print("  next             ->  re-run `graphify dsh doctor --fix` to repair")
         return 0 if not diagnosis["problems"] else 1
 
     repaired = False
@@ -2960,14 +2963,14 @@ def _dsh_install(
 
     Exits 2 when no profile can mount the bridge: the files are written, but the
     guard is inert, and a success status would hide that from scripts and users.
-    `graphify dsh doctor` is the command that repairs it.
+    `graphify dsh doctor --fix` is the command that repairs it.
     """
     project_dir = project_dir or Path(".")
     _copy_skill_file("dsh", project=project, project_dir=project_dir)
     active = _dsh_wiring(project_dir, project=project, strict=strict)
     print()
     if not active:
-        print("dsh install is NOT active yet: run `graphify dsh doctor` to add the bridge, "
+        print("dsh install is NOT active yet: run `graphify dsh doctor --fix` to add the bridge, "
               "then relaunch dsh", file=sys.stderr)
         sys.exit(2)
     if strict:
@@ -3830,17 +3833,17 @@ def dispatch_install_cli(cmd: str) -> bool:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         args = sys.argv[3:]
         project_scope = "--project" in args
-        check = "--check" in args
+        fix = "--fix" in args
         for arg in args:
-            if arg in ("--project", "--strict", "--check"):
+            if arg in ("--project", "--strict", "--fix"):
                 continue
             if arg.startswith("-"):
                 print(f"error: unknown dsh option '{arg}'", file=sys.stderr)
                 sys.exit(1)
             print(f"error: unexpected dsh argument '{arg}'", file=sys.stderr)
             sys.exit(1)
-        if check and subcmd != "doctor":
-            print("error: --check is only used by `graphify dsh doctor`", file=sys.stderr)
+        if fix and subcmd != "doctor":
+            print("error: --fix is only used by `graphify dsh doctor`", file=sys.stderr)
             sys.exit(1)
         if "--strict" in args and subcmd != "install":
             print("error: --strict is only used by `graphify dsh install`", file=sys.stderr)
@@ -3853,12 +3856,12 @@ def dispatch_install_cli(cmd: str) -> bool:
         elif subcmd == "uninstall":
             _dsh_uninstall(Path("."), project=project_scope)
         elif subcmd == "doctor":
-            # Diagnose and repair; --check keeps it read-only for CI.
-            sys.exit(_dsh_doctor(Path("."), check=check))
+            # Diagnose; --fix repairs.
+            sys.exit(_dsh_doctor(Path("."), fix=fix))
         else:
             print(
                 "Usage: graphify dsh [install|uninstall|doctor] [--project] "
-                "[--strict] [--check]",
+                "[--strict] [--fix]",
                 file=sys.stderr,
             )
             sys.exit(1)
