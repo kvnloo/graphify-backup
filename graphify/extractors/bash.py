@@ -159,6 +159,13 @@ def _bash_inline_script_dir_path(raw: str, script_dir: Path) -> Path | None:
         base = base.parent
     return base / tail.group(1)
 
+# A path in the script's own folder, as in `$(dirname "$0")/x.sh` or
+# `$(dirname "${BASH_SOURCE[0]}")/lib/x.sh`: the path after it (#5575).
+_BASH_DIRNAME_PATH = re.compile(
+    r'^\$\(dirname\s+"?\$(?:0|\{0\}|BASH_SOURCE|\{BASH_SOURCE(?:\[0\])?\})"?\s*\)'
+    r"/((?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+)$"
+)
+
 
 def _bash_assignment_base(value: str, script_dir: Path) -> Path | None:
     """Resolve a top-level assignment's value to a directory, or None if untracked.
@@ -337,14 +344,20 @@ def extract_bash(path: Path) -> dict:
         if raw is None:
             # Only plain variable expansions with a literal suffix identify a path.
             word = word.removeprefix('"').removesuffix('"')
-            match = re.fullmatch(r"\$(?:\{(\w+)\}|(\w+))/([\w.-]+(?:/[\w.-]+)*)", word)
-            if match and (name := match[1] or match[2]) in invocation_bases:
-                offset, tracked = invocation_bases[name]
-                if tracked is None or offset >= operand.start_byte or ".." in match[3].split("/"):
-                    return None
-                base, raw = tracked, match[3]
-            elif not runner and word.startswith("$") and word.endswith(".sh"):
-                raw = _bash_source_suffix(word)  # Legacy script-dir guess for direct runs.
+            own = _BASH_DIRNAME_PATH.match(word)
+            if own and ".." not in own.group(1).split("/"):
+                # `$(dirname "$0")/x.sh` is a file in the script's own folder (#5575);
+                # base stays path.parent, so no `..` in the suffix is followed.
+                raw = own.group(1)
+            else:
+                match = re.fullmatch(r"\$(?:\{(\w+)\}|(\w+))/([\w.-]+(?:/[\w.-]+)*)", word)
+                if match and (name := match[1] or match[2]) in invocation_bases:
+                    offset, tracked = invocation_bases[name]
+                    if tracked is None or offset >= operand.start_byte or ".." in match[3].split("/"):
+                        return None
+                    base, raw = tracked, match[3]
+                elif not runner and word.startswith("$") and word.endswith(".sh"):
+                    raw = _bash_source_suffix(word)  # Legacy script-dir guess for direct runs.
         if not raw:
             return None
         if not raw.endswith(".sh"):
