@@ -2406,6 +2406,12 @@ def test_int_arg_and_shortest_path_handle_null_arguments():
         {"source": "extract", "target": "build", "max_hops": None, "undirected": None},
     )
     assert "extract" in out and "build" in out
+def test_strip_diacritics_ascii_fast_path_and_unicode_folding():
+    assert _strip_diacritics("") == ""
+    assert _strip_diacritics("hello_world_123") == "hello_world_123"
+    assert _strip_diacritics(None) == ""
+    assert _strip_diacritics(123) == "123"
+    assert _strip_diacritics("café naïve résumé") == "cafe naive resume"
 
 
 def test_shortest_path_handles_mixed_int_and_str_node_ids():
