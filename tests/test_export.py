@@ -1947,5 +1947,17 @@ def test_to_cypher_handles_non_string_ids_labels_and_null_fields(tmp_path):
     assert "MERGE (n:Unknown {id: '1'}) SET n.label = '1'" in text
     assert "MERGE (n:Unknown {id: 'n2'}) SET n.label = '0';" in text
     assert "MERGE (a)-[:RELATES_TO {confidence: 'EXTRACTED'}]->(b);" in text
+def test_cypher_escape_fast_path_and_control_char_parity():
+    from graphify.export import _cypher_escape
+
+    # Printable ASCII without backslash/quote passes through unchanged
+    assert _cypher_escape("") == ""
+    assert _cypher_escape("auth_service.py") == "auth_service.py"
+    # Backslash, single quote, and non-ASCII Unicode are preserved/escaped
+    assert _cypher_escape("a\\b'c") == "a\\\\b\\'c"
+    assert _cypher_escape("café's\\path") == "café\\'s\\\\path"
+    # Tab is preserved; NUL, newline, CR, and other C0 controls are stripped
+    assert _cypher_escape("a\tb\nc\rd\x00e\x1ff") == "a\tbcdef"
+
 
 
