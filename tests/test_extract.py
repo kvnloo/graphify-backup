@@ -4138,6 +4138,7 @@ def test_bash_invocations_use_tracked_dir_and_shell_shebang(tmp_path):
         './helper\n'
         '"$ROOT/bin/other"\n'
         'helper\n'
+        'bash helper\n'
         "'$ROOT/bin/helper'\n",
         encoding="utf-8",
     )
